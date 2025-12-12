@@ -24,6 +24,7 @@ variable "instance_type" {
 variable "key_name" {
   description = "EC2 key pair name"
   type        = string
+  default = "devops-project.pem"
 }
 
 variable "aws_account_id" {
