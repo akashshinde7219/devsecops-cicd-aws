@@ -1,126 +1,147 @@
 pipeline {
-    agent any
+    agent { label "test" } // change to the label of your Linux node
 
     environment {
-        AWS_REGION        = "ap-south-1"          // change if needed
-        AWS_ACCOUNT_ID    = "730335595521"        // your AWS account
-        ECR_REPO_NAME     = "devsecops-flask-app"
-        IMAGE_TAG         = "${env.BUILD_NUMBER}"
-        APP_NAME          = "devsecops-flask-app"
+        AWS_REGION     = "ap-south-1"
+        AWS_ACCOUNT_ID = "730335595521"
+        ECR_REPO_NAME  = "devsecops-flask-app"
+        IMAGE_TAG      = "${BUILD_NUMBER}"
+        APP_NAME       = "devsecops-flask-app"
 
-        // SonarQube
-        SONARQUBE_ENV     = "sonarqube-server"    // Jenkins SonarQube server name
+        // SonarQube (optional)
+        SONARQUBE_ENV  = "sonarqube-server"
 
-        // Terraform
-        TF_DIR            = "infra"
+        // Terraform directory
+        TF_DIR         = "infra"
     }
 
     options {
         timestamps()
-        ansiColor('xterm')
+        // disableConcurrentBuilds()
     }
 
     stages {
 
         stage('Checkout') {
             steps {
-                git branch: 'main', url: 'https://github.com/your-user/devsecops-cicd-aws.git'
+                git branch: 'main', url: 'https://github.com/akashshinde7219/devsecops-cicd-aws.git'
             }
         }
 
-        // stage('Code Quality - SonarQube') {
-        //     steps {
-        //         script {
-        //             withSonarQubeEnv(env.SONARQUBE_ENV) {
-        //                 sh """
-        //                 cd app
-        //                 sonar-scanner \
-        //                   -Dsonar.projectKey=${APP_NAME} \
-        //                   -Dsonar.sources=. \
-        //                   -Dsonar.host.url=\$SONAR_HOST_URL \
-        //                   -Dsonar.login=\$SONAR_AUTH_TOKEN
-        //                 """
-        //             }
-        //         }
-        //     }
-        // }
-
+       // ===== Unit tests =====
         stage('Unit Tests') {
-            steps {
-                sh """
-                cd app
-                pip install -r requirements.txt
-                pytest -q
-                """
-            }
+          steps {
+            sh '''
+            set -e
+            python3 -m venv .venv
+            . .venv/bin/activate
+            pip install -r app/requirements.txt
+        
+            # make the 'app' directory importable as top-level 'app'
+            PYTHONPATH=$PWD/app pytest -q
+            '''
+          }
         }
 
+
+        // ===== Build Docker Image =====
         stage('Build Docker Image') {
             steps {
-                sh """
+                sh '''
+                set -e
                 cd app
                 docker build -t ${APP_NAME}:${IMAGE_TAG} .
-                """
+                '''
             }
         }
 
+        // ===== Security Scan (Trivy) =====
         stage('Security Scan - Trivy') {
             steps {
-                sh """
+                sh '''
+                set -e
                 trivy image --exit-code 1 --severity HIGH,CRITICAL ${APP_NAME}:${IMAGE_TAG} || \
-                (echo "Trivy scan failed for high/critical vulnerabilities" && exit 1)
-                """
+                (echo "Trivy scan found HIGH/CRITICAL vulnerabilities" && exit 1)
+                '''
             }
         }
 
+        // ===== Push to Amazon ECR =====
         stage('Push to ECR') {
             steps {
-                script {
-                    sh """
+                // bind AWS credentials stored in Jenkins credentials store
+                // create a "username/password" credential with id 'aws-creds' where username=access_key and password=secret_key
+                withCredentials([usernamePassword(credentialsId: 'aws-creds', usernameVariable: 'AWS_ACCESS_KEY_ID', passwordVariable: 'AWS_SECRET_ACCESS_KEY')]) {
+                    sh '''
+                    set -e
+                    export AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+                    export AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+                    export AWS_DEFAULT_REGION=${AWS_REGION}
+
                     aws ecr describe-repositories --repository-name ${ECR_REPO_NAME} --region ${AWS_REGION} || \
-                    aws ecr create-repository --repository-name ${ECR_REPO_NAME} --region ${AWS_REGION}
+                      aws ecr create-repository --repository-name ${ECR_REPO_NAME} --region ${AWS_REGION}
 
                     aws ecr get-login-password --region ${AWS_REGION} | \
-                        docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com
+                      docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com
 
                     docker tag ${APP_NAME}:${IMAGE_TAG} ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO_NAME}:${IMAGE_TAG}
                     docker push ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO_NAME}:${IMAGE_TAG}
-                    """
+                    '''
                 }
             }
         }
 
+        // ===== Terraform Init & Plan =====
         stage('Terraform Init & Plan') {
             steps {
-                dir(env.TF_DIR) {
-                    sh """
-                    terraform init
-                    terraform plan -var="app_image=${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO_NAME}:${IMAGE_TAG}"
-                    """
+                // ensure Terraform has AWS creds for plan if provider needs them
+                withCredentials([usernamePassword(credentialsId: 'aws-creds', usernameVariable: 'AWS_ACCESS_KEY_ID', passwordVariable: 'AWS_SECRET_ACCESS_KEY')]) {
+                    dir(env.TF_DIR) {
+                        sh '''
+                        set -e
+                        export AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+                        export AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+                        export AWS_DEFAULT_REGION=${AWS_REGION}
+
+                        terraform init -input=false
+                        terraform plan -var="app_image=${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO_NAME}:${IMAGE_TAG}" -out=tfplan
+                        '''
+                    }
                 }
             }
         }
 
+        // ===== Terraform Apply (manual approval on main) =====
         stage('Terraform Apply') {
-            when {
-                expression { return env.BRANCH_NAME == 'main' || env.GIT_BRANCH == 'origin/main' }
-            }
+            // when {
+            //     branch "main"
+            // }
             steps {
                 input message: "Apply Terraform changes to AWS (Prod)?", ok: "Apply"
-                dir(env.TF_DIR) {
-                    sh """
-                    terraform apply -auto-approve \
-                        -var="app_image=${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO_NAME}:${IMAGE_TAG}"
-                    """
+                withCredentials([usernamePassword(credentialsId: 'aws-creds', usernameVariable: 'AWS_ACCESS_KEY_ID', passwordVariable: 'AWS_SECRET_ACCESS_KEY')]) {
+                    dir(env.TF_DIR) {
+                        sh '''
+                        set -e
+                        export AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+                        export AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+                        export AWS_DEFAULT_REGION=${AWS_REGION}
+                        
+                   
+                        # apply using plan file if you want (uncomment below) or run apply directly
+                         terraform apply -auto-approve tfplan
+
+                        terraform apply -auto-approve -var="app_image=${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO_NAME}:${IMAGE_TAG}"
+                        '''
+                    }
                 }
             }
         }
 
+        // ===== Blue-Green Switch & Smoke Test (placeholder) =====
         stage('Blue-Green Switch & Smoke Test') {
             steps {
                 script {
-                    // simple placeholder – real logic could hit /health on Green target group
-                    echo "Blue-Green switch handled by Terraform + ALB target groups. Add smoke tests here."
+                    echo "Blue-Green switch handled by Terraform + ALB target groups. Add smoke tests (e.g. curl /health) here."
                 }
             }
         }
@@ -129,6 +150,12 @@ pipeline {
     post {
         always {
             echo "Pipeline finished: ${currentBuild.currentResult}"
+        }
+        success {
+            echo "Build ${env.BUILD_NUMBER} succeeded."
+        }
+        failure {
+            echo "Build ${env.BUILD_NUMBER} failed."
         }
     }
 }
