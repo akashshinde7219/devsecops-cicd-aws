@@ -1,8 +1,8 @@
-🚀 DevSecOps CI/CD Pipeline on AWS
+**🚀 DevSecOps CI/CD Pipeline on AWS**
 
 Terraform · Jenkins · Docker · ECR · ALB Blue-Green · Trivy
 
-📁 Project Structure
+**📁 Project Structure**
 
 devsecops-cicd-aws/
 │
@@ -25,13 +25,13 @@ devsecops-cicd-aws/
 └── README.md
 
 
-📌 Project Overview
+**📌 Project Overview**
 
 This project demonstrates a real-world DevSecOps CI/CD pipeline for deploying a Flask web application on AWS using Infrastructure as Code, containerization, automated security scans, and Blue-Green deployment for zero-downtime releases.
 
 The pipeline automates everything from code commit to production traffic switch, following DevOps and security best practices.
 
-🛠️ Tech Stack
+**🛠️ Tech Stack**
 
 CI/CD: Jenkins (Declarative Pipeline)
 
@@ -51,7 +51,7 @@ Application: Python Flask
 
 Testing: Pytest
 
-🔄 CI/CD Pipeline Flow
+**🔄 CI/CD Pipeline Flow**
 
 ![alt text](image.png)
 
@@ -91,7 +91,7 @@ Health checks via ALB
 
 Traffic switched from Blue → Green with zero downtime
 
-🧱 Architecture Overview
+**🧱 Architecture Overview**
 
 ALB routes traffic to either Blue or Green target group
 
@@ -101,7 +101,7 @@ Dockerized Flask app runs on EC2 instances
 
 Trivy ensures container images are free from critical vulnerabilities before deployment
 
-🔐 Security Implementation
+**🔐 Security Implementation**
 
 Trivy Image Scanning
 
